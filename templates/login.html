@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Login — Resume Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <style>
+        .auth-page { 
+            padding: 60px 20px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh;
+            background: transparent; /* show iframe preview behind */
+        }
+        .auth-card { 
+            width: 100%; 
+            max-width: 420px; 
+            background: white; 
+            padding: 40px; 
+            border-radius: 12px; 
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        .auth-card h1 { 
+            margin: 0 0 10px; 
+            font-size: 28px; 
+            color: #1e293b;
+        }
+        .auth-card .subtitle { 
+            color: #64748b; 
+            margin-bottom: 30px; 
+            font-size: 14px;
+        }
+        .form-group { 
+            margin-bottom: 18px; 
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #1e293b;
+            font-size: 14px;
+        }
+        .form-group input { 
+            width: 100%; 
+            padding: 12px 14px; 
+            border-radius: 8px; 
+            border: 1px solid #e2e8f0;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #2563eb;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+        .auth-actions { 
+            display: flex; 
+            gap: 10px; 
+            margin-top: 20px;
+        }
+        .btn-send {
+            flex: 1;
+            padding: 12px 20px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 14px;
+        }
+        .btn-send:hover {
+            background: #1d4ed8;
+        }
+        .btn-send:disabled {
+            background: #cbd5e1;
+            cursor: not-allowed;
+        }
+        .btn-verify {
+            flex: 1;
+            padding: 12px 20px;
+            background: #16a34a;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 14px;
+        }
+        .btn-verify:hover {
+            background: #15803d;
+        }
+        .auth-msg { 
+            margin-top: 12px; 
+            padding: 12px; 
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .auth-msg.error { 
+            background: #fee2e2;
+            color: #dc2626; 
+            display: none;
+        }
+        .auth-msg.success { 
+            background: #dcfce7;
+            color: #16a34a; 
+            display: none;
+        }
+        .otp-input-group {
+            display: none;
+        }
+        .timer {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 8px;
+        }
+        /* Site preview behind the login card (iframe-based) */
+        .site-preview { position: fixed; inset: 0; z-index: 1; overflow: hidden; }
+        .site-preview iframe { width: 100%; height: 100%; border: 0; display: block; transform: scale(1.02); filter: blur(8px) saturate(90%); }
+        .site-preview::after { content: ""; position: absolute; inset:0; background: rgba(15,23,42,0.25); pointer-events: none; }
+        .site-preview, .site-preview * { pointer-events: none; }
+
+        /* Ensure auth card sits above preview */
+        .auth-page { position: relative; z-index: 3; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <img src="{{ url_for('static', filename='images/logo.png') }}" alt="AI Resume Analyzer logo" class="logo" />
+                <h1>AI Resume Analyzer</h1>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Live site preview via iframe blurred in background -->
+    <div class="site-preview" aria-hidden="true">
+        <iframe id="previewFrame" src="/preview" title="site-preview" loading="lazy"></iframe>
+    </div>
+
+    <section class="auth-page">
+        <div class="auth-card">
+            <h1>🔐 Sign In</h1>
+            <p class="subtitle">Sign in with your email and password</p>
+
+            <div class="form-group">
+                <label>Email</label>
+                <input id="email" type="email" placeholder="you@example.com" />
+            </div>
+
+            <div class="form-group">
+                <label>Password</label>
+                <input id="password" type="password" placeholder="Your password" />
+            </div>
+
+            <div class="auth-actions">
+                <button id="doLogin" class="btn-send">Sign In</button>
+            </div>
+
+            <p style="margin-top:12px; font-size:14px; color:#64748b;">New customer? <a href="/signup">Create an account</a></p>
+
+            <div class="auth-msg error" id="errorMsg"></div>
+            <div class="auth-msg success" id="successMsg"></div>
+        </div>
+    </section>
+
+    <script>
+        async function callApi(path, body) {
+            const res = await fetch(path, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(body)
+            });
+            return res.json();
+        }
+
+        function showError(msg) {
+            document.getElementById('errorMsg').textContent = msg;
+            document.getElementById('errorMsg').style.display = 'block';
+            document.getElementById('successMsg').style.display = 'none';
+        }
+
+        function showSuccess(msg) {
+            document.getElementById('successMsg').textContent = msg;
+            document.getElementById('successMsg').style.display = 'block';
+            document.getElementById('errorMsg').style.display = 'none';
+        }
+
+        function clearMessages() {
+            document.getElementById('errorMsg').style.display = 'none';
+            document.getElementById('successMsg').style.display = 'none';
+        }
+
+        document.getElementById('doLogin').addEventListener('click', async () => {
+            clearMessages();
+            const email = document.getElementById('email').value.trim();
+            const password = document.getElementById('password').value;
+            if (!email || !password) { showError('Email and password are required'); return; }
+
+            document.getElementById('doLogin').disabled = true;
+            const res = await callApi('/login', { username: email, password });
+            document.getElementById('doLogin').disabled = false;
+            if (res.error) { showError(res.error); return; }
+            showSuccess('Logged in — redirecting...');
+            setTimeout(() => window.location = '/', 600);
+        });
+
+        // Enter key support
+        document.getElementById('password').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('doLogin').click();
+        });
+    </script>
+</body>
+</html>

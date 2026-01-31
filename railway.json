@@ -1,0 +1,11 @@
+{
+  "name": "AI Resume Analyzer",
+  "description": "Resume analysis tool with skill gap detection and career insights",
+  "env": {
+    "FLASK_ENV": "production",
+    "RESUME_ANALYZER_SECRET": {
+      "description": "Secret key for session management",
+      "value": "change-me-to-a-random-secret"
+    }
+  }
+}
