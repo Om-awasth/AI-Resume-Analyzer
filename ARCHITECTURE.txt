@@ -1,0 +1,273 @@
+================================================================================
+RESUME ANALYZER - SYSTEM ARCHITECTURE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              USER INTERFACE                              │
+│                         (HTML/CSS/JavaScript)                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         FLASK WEB SERVER (app.py)                       │
+│  Routes: / (index), /analyze (process), /about                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+        ┌───────────────────┐           ┌───────────────────┐
+        │   PDF READER      │           │  SKILL EXTRACTOR  │
+        │  (pdf_reader.py)  │           │(skill_extractor.py)│
+        │                   │           │                   │
+        │ • Extract text    │           │ • Detect skills   │
+        │ • Clean text      │           │ • Match patterns  │
+        │ • Get contact     │           │ • Calculate gaps  │
+        └───────────────────┘           └───────────────────┘
+                    │                               │
+                    └───────────────┬───────────────┘
+                                    ▼
+                    ┌─────────────────────────────┐
+                    │      TF-IDF MODEL           │
+                    │    (tfidf_model.py)         │
+                    │                             │
+                    │ • Vectorize text            │
+                    │ • Calculate cosine          │
+                    │ • Generate similarity       │
+                    └─────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+        ┌───────────────────┐           ┌───────────────────┐
+        │  SKILLS DATABASE  │           │ LEARNING RESOURCES│
+        │   (skills.py)     │           │    (skills.py)    │
+        │                   │           │                   │
+        │ • 80+ skills      │           │ • 70+ resources   │
+        │ • 3 job roles     │           │ • Courses/Sites   │
+        │ • Requirements    │           │ • Durations       │
+        └───────────────────┘           └───────────────────┘
+                                    │
+                                    ▼
+                    ┌─────────────────────────────┐
+                    │       RESULTS PAGE          │
+                    │      (result.html)          │
+                    │                             │
+                    │ • Scores display            │
+                    │ • Skills visualization      │
+                    │ • Recommendations           │
+                    └─────────────────────────────┘
+
+================================================================================
+DATA FLOW
+================================================================================
+
+1. USER UPLOADS PDF
+   └─> Flask receives file
+       └─> Saved to /uploads/
+
+2. TEXT EXTRACTION
+   └─> PyPDF2 extracts text
+       └─> Text cleaning (remove special chars, normalize)
+           └─> Extract contact info (email, phone)
+
+3. SKILL DETECTION
+   └─> Regex pattern matching
+       └─> Check each skill from database
+           └─> Build detected skills list
+
+4. TF-IDF ANALYSIS
+   └─> Vectorize resume text
+       └─> Vectorize job description
+           └─> Calculate cosine similarity
+               └─> Convert to percentage
+
+5. GAP ANALYSIS
+   └─> Compare detected vs required
+       └─> Identify matched skills (intersection)
+           └─> Identify missing skills (difference)
+               └─> Calculate match percentage
+
+6. RESOURCE MAPPING
+   └─> For each missing skill
+       └─> Lookup learning resources
+           └─> Add courses, websites, duration
+
+7. RESULTS DISPLAY
+   └─> Render result.html
+       └─> Show scores, skills, resources
+           └─> Provide recommendations
+
+================================================================================
+ML/NLP PIPELINE
+================================================================================
+
+STAGE 1: TEXT PREPROCESSING
+┌──────────────────────────────────────────────────────────────┐
+│ Raw PDF → PyPDF2 → Raw Text → Cleaning → Processed Text     │
+│                                                              │
+│ Cleaning Steps:                                              │
+│ • Remove extra whitespace                                    │
+│ • Remove special characters                                  │
+│ • Normalize spaces                                           │
+│ • Preserve important symbols (#, +, .)                       │
+└──────────────────────────────────────────────────────────────┘
+
+STAGE 2: FEATURE EXTRACTION
+┌──────────────────────────────────────────────────────────────┐
+│ Processed Text → Skill Matching → Detected Skills           │
+│                                                              │
+│ Method: Keyword Matching with Regex                          │
+│ Pattern: \b + skill.lower() + \b                            │
+│ Database: 80+ predefined skills                             │
+│ Result: List of skills found in resume                      │
+└──────────────────────────────────────────────────────────────┘
+
+STAGE 3: TF-IDF VECTORIZATION
+┌──────────────────────────────────────────────────────────────┐
+│                     TfidfVectorizer                          │
+│ Parameters:                                                  │
+│ • max_features = 1000                                        │
+│ • stop_words = 'english'                                     │
+│ • ngram_range = (1, 2)                                       │
+│                                                              │
+│ Resume Text ────> [v1₁, v1₂, ..., v1₁₀₀₀]                  │
+│ Job Description ─> [v2₁, v2₂, ..., v2₁₀₀₀]                  │
+└──────────────────────────────────────────────────────────────┘
+
+STAGE 4: SIMILARITY CALCULATION
+┌──────────────────────────────────────────────────────────────┐
+│              Cosine Similarity Formula                       │
+│                                                              │
+│         v1 · v2                                              │
+│ cos(θ) = ───────────                                         │
+│         ||v1|| ||v2||                                        │
+│                                                              │
+│ Result: Score between 0 and 1                                │
+│ Conversion: Score × 100 = Percentage                         │
+└──────────────────────────────────────────────────────────────┘
+
+STAGE 5: SKILL MATCHING
+┌──────────────────────────────────────────────────────────────┐
+│ Set Operations:                                              │
+│                                                              │
+│ Detected = {Python, SQL, Pandas, NumPy, ...}                │
+│ Required = {Python, SQL, Tableau, Power BI, ...}            │
+│                                                              │
+│ Matched = Detected ∩ Required                                │
+│ Missing = Required - Detected                                │
+│                                                              │
+│ Match % = (|Matched| / |Required|) × 100                    │
+└──────────────────────────────────────────────────────────────┘
+
+================================================================================
+SCORING SYSTEM
+================================================================================
+
+DUAL SCORING APPROACH:
+
+1. SKILL MATCH SCORE
+   ┌────────────────────────────────────────┐
+   │ Matched Skills / Total Required × 100  │
+   │                                        │
+   │ Example:                               │
+   │ 16 matched / 18 required = 88.89%      │
+   │                                        │
+   │ Interpretation:                        │
+   │ • 90-100%: Excellent                   │
+   │ • 75-89%:  Strong                      │
+   │ • 50-74%:  Moderate                    │
+   │ • 25-49%:  Weak                        │
+   │ • 0-24%:   Poor                        │
+   └────────────────────────────────────────┘
+
+2. TF-IDF SIMILARITY SCORE
+   ┌────────────────────────────────────────┐
+   │ Cosine Similarity × 100                 │
+   │                                        │
+   │ Measures semantic similarity between    │
+   │ resume text and job description        │
+   │                                        │
+   │ Interpretation:                        │
+   │ • 70-100%: Strong alignment            │
+   │ • 50-69%:  Moderate alignment          │
+   │ • 30-49%:  Weak alignment              │
+   │ • 0-29%:   Poor alignment              │
+   └────────────────────────────────────────┘
+
+COMBINED INTERPRETATION:
+┌─────────────────────────────────────────────────────────────┐
+│ High Skill Match + High Similarity → Excellent candidate    │
+│ High Skill Match + Low Similarity  → Add keywords           │
+│ Low Skill Match  + High Similarity → Learn missing skills   │
+│ Low Skill Match  + Low Similarity  → Major revision needed  │
+└─────────────────────────────────────────────────────────────┘
+
+================================================================================
+TECHNOLOGY STACK
+================================================================================
+
+BACKEND
+├── Flask 3.0          → Web framework, routing
+├── Python 3.8+        → Core language
+└── Werkzeug          → File handling, security
+
+MACHINE LEARNING / NLP
+├── scikit-learn 1.3   → TF-IDF, cosine similarity
+├── numpy 1.24         → Numerical operations
+└── pandas 2.0         → Data manipulation (optional)
+
+PDF PROCESSING
+└── PyPDF2 3.0        → PDF text extraction
+
+FRONTEND
+├── HTML5             → Structure
+├── CSS3              → Styling, animations
+└── JavaScript        → Form validation, UX
+
+STORAGE
+└── File System       → Temporary PDF storage
+
+================================================================================
+DEPLOYMENT OPTIONS
+================================================================================
+
+LOCAL
+└── python3 app.py → http://localhost:5000
+
+CLOUD OPTIONS
+├── Heroku            → Free tier available
+├── PythonAnywhere    → Free tier available
+├── AWS EC2           → Pay as you go
+├── Google Cloud Run  → Serverless option
+└── DigitalOcean      → $5/month droplet
+
+CONTAINERIZATION
+└── Docker            → Portable deployment
+
+================================================================================
+FILE SIZE & PERFORMANCE
+================================================================================
+
+CODE SIZE
+├── Python code:       ~1,500 lines
+├── HTML/CSS:          ~800 lines
+├── Total project:     ~2,300 lines
+└── Compressed:        ~100 KB
+
+PROCESSING TIME
+├── PDF extraction:    0.5-1 second
+├── Skill detection:   0.2-0.5 seconds
+├── TF-IDF analysis:   0.5-1 second
+├── Results render:    0.1-0.2 seconds
+└── Total:            1.5-3 seconds average
+
+RESOURCE USAGE
+├── Memory:           ~50-100 MB
+├── CPU:              Low (< 10% on modern CPU)
+└── Storage:          Minimal (temp files only)
+
+SCALABILITY
+├── Concurrent users: 10-50 (Flask dev server)
+├── With Gunicorn:    100-500 users
+└── With Load Bal:    Thousands+
+
+================================================================================
