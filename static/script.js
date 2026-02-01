@@ -236,10 +236,6 @@ function resetForm() {
     document.querySelector('.analyzer-section').scrollIntoView({ behavior: 'smooth' });
 }
 
-function printResults() {
-    window.print();
-}
-
 // Smooth scroll for navigation links
 document.querySelectorAll('a[href^="#"]').forEach(anchor => {
     anchor.addEventListener('click', function(e) {
