@@ -70,6 +70,12 @@ See `.env.example` for all options. Key ones:
 - `RESUME_ANALYZER_SECRET`: Random secret key
 - `DATABASE_URL`: PostgreSQL connection (Railway provides this)
 - `MAIL_*`: Email config for password resets (optional)
+ - `SMTP_HOST`: SMTP server hostname (e.g. smtp.gmail.com)
+ - `SMTP_PORT`: SMTP port (usually 587 or 465)
+ - `SMTP_USER`: SMTP username (your email or service user)
+ - `SMTP_PASS`: SMTP password or app-specific password
+ - `SMTP_SECURE`: `true` to use SSL (465) or `false` to use STARTTLS (587)
+ - `FROM_EMAIL`: Optional from address (e.g. "Your App <no-reply@yourapp.com>")
 
 ---
 

@@ -19,6 +19,8 @@ from model.skills import (
 )
 from model.tfidf_model import calculate_resume_similarity
 from model.users import create_user, authenticate_user, save_analysis, get_history, SessionLocal, User, Analysis, create_password_reset, reset_password_with_token
+from utils.email_sender import send_email
+import requests
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -276,8 +278,35 @@ def forgot_password_request():
         token = create_password_reset(identifier)
         if not token:
             return jsonify({'error': 'user not found'}), 404
-        # In production you would email the token. For dev, return it.
-        return jsonify({'message': 'reset_created', 'token': token})
+        subject = 'Resume Analyzer — Password Reset'
+        plain = f'Use this token to reset your password: {token}\nThis token expires in 60 minutes.'
+        html = f'<p>Use this token to reset your password: <b>{token}</b></p><p>This token expires in 60 minutes.</p>'
+
+        # Prefer external email microservice if configured
+        email_service = os.environ.get('EMAIL_SERVICE_URL')
+        if email_service:
+            try:
+                resp = requests.post(
+                    f"{email_service.rstrip('/')}/send-reset",
+                    json={"to": identifier, "subject": subject, "text": plain, "html": html},
+                    timeout=10,
+                )
+                if resp.ok:
+                    data = resp.json()
+                    # include preview link from Ethereal if present
+                    return jsonify({'message': 'reset_created', 'sent': True, 'preview': data.get('preview')})
+                else:
+                    # fallback to local SMTP helper if microservice failed
+                    pass
+            except Exception:
+                # microservice unreachable; fall through to SMTP helper
+                pass
+
+        # Try to email via local SMTP helper; if not configured return token (dev fallback)
+        ok, info = send_email(identifier, subject, plain, html)
+        if ok:
+            return jsonify({'message': 'reset_created', 'sent': True})
+        return jsonify({'message': 'reset_created', 'sent': False, 'token': token, 'info': info})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
