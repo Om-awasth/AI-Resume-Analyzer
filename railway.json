@@ -6,6 +6,26 @@
     "RESUME_ANALYZER_SECRET": {
       "description": "Secret key for session management",
       "value": "change-me-to-a-random-secret"
+    },
+    "EMAIL_SERVICE_URL": {
+      "description": "Email microservice URL (e.g., http://email-service-url:3020) or leave empty to use SMTP",
+      "value": ""
+    },
+    "SMTP_HOST": {
+      "description": "SMTP server host (e.g., smtp.gmail.com)",
+      "value": ""
+    },
+    "SMTP_USER": {
+      "description": "SMTP username/email",
+      "value": ""
+    },
+    "SMTP_PASS": {
+      "description": "SMTP password or app-specific password",
+      "value": ""
+    },
+    "FROM_EMAIL": {
+      "description": "From email address for sending emails",
+      "value": ""
     }
   }
 }
