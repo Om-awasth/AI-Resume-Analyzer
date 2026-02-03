@@ -25,6 +25,7 @@ class User(Base):
     __tablename__ = 'users'
     id = Column(String(36), primary_key=True)
     username = Column(String(150), unique=True, nullable=False)
+    email = Column(String(255), unique=True, nullable=True)
     phone_number = Column(String(40), unique=True, nullable=True)
     password_hash = Column(String(256), nullable=False)
     created_at = Column(DateTime, nullable=False)
@@ -80,13 +81,29 @@ SessionLocal = sessionmaker(bind=ENGINE)
 
 
 def _init_db():
+    """Initialize database, ensuring email column exists in users table."""
     Base.metadata.create_all(bind=ENGINE)
+    
+    # Check if users table exists but lacks email column, and recreate if needed
+    db = SessionLocal()
+    try:
+        # Try to query with email column; if it fails, recreate the table
+        db.execute('SELECT email FROM users LIMIT 1')
+    except Exception:
+        # Table doesn't have email column; drop and recreate
+        try:
+            User.__table__.drop(bind=ENGINE, checkfirst=True)
+            Base.metadata.create_all(bind=ENGINE)
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 _init_db()
 
 
-def create_user(username, password, phone_number=None):
+def create_user(username, password, phone_number=None, email=None):
     """Create a new user. Returns user dict or None if exists."""
     db = SessionLocal()
     try:
@@ -99,18 +116,23 @@ def create_user(username, password, phone_number=None):
             existing_phone = db.query(User).filter(User.phone_number == phone_number).first()
             if existing_phone:
                 return None
+        if email:
+            existing_email = db.query(User).filter(User.email == email).first()
+            if existing_email:
+                return None
 
         user_id = str(uuid.uuid4())
         u = User(
             id=user_id,
             username=username or f'user_{user_id[:8]}',
+            email=email,
             phone_number=phone_number,
             password_hash=generate_password_hash(password, method='pbkdf2:sha256'),
             created_at=datetime.utcnow()
         )
         db.add(u)
         db.commit()
-        return {'id': u.id, 'username': u.username, 'phone_number': u.phone_number, 'created_at': u.created_at.isoformat()}
+        return {'id': u.id, 'username': u.username, 'email': u.email, 'phone_number': u.phone_number, 'created_at': u.created_at.isoformat()}
     finally:
         db.close()
 
@@ -250,14 +272,19 @@ def verify_otp(phone, code):
 
 
 def create_password_reset(identifier, ttl_minutes=60):
-    """Create a password reset token for a user identified by username or phone.
+    """Create a password reset token for a user identified by username, email, or phone.
     Returns token (string) or None if user not found."""
     db = SessionLocal()
     try:
         user = None
         id_clean = str(identifier).strip()
-        if id_clean.replace('+', '').replace('-', '').isdigit():
+        # Try email first if it looks like an email
+        if '@' in id_clean:
+            user = db.query(User).filter(User.email == id_clean).first()
+        # Try phone if it's all digits
+        if not user and id_clean.replace('+', '').replace('-', '').isdigit():
             user = db.query(User).filter(User.phone_number == id_clean).first()
+        # Try username as fallback
         if not user:
             user = db.query(User).filter(User.username == id_clean).first()
         if not user:

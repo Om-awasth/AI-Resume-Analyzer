@@ -213,16 +213,17 @@ def signup():
     username = data.get('username')
     password = data.get('password')
     phone = data.get('phone')
-    if not password or (not username and not phone):
-        return jsonify({'error': 'provide password and username or phone'}), 400
+    email = data.get('email')
+    if not password or (not username and not phone and not email):
+        return jsonify({'error': 'provide password and username, phone, or email'}), 400
 
-    user = create_user(username, password, phone_number=phone)
+    user = create_user(username, password, phone_number=phone, email=email)
     if user is None:
-        return jsonify({'error': 'username or phone already exists'}), 400
+        return jsonify({'error': 'username, phone, or email already exists'}), 400
 
     session['user_id'] = user['id']
     session['username'] = user.get('username')
-    return jsonify({'message': 'user created', 'username': user.get('username'), 'phone': user.get('phone_number')})
+    return jsonify({'message': 'user created', 'username': user.get('username'), 'email': user.get('email'), 'phone': user.get('phone_number')})
 
 
 @app.route('/login', methods=['POST'])
