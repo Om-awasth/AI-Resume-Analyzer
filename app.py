@@ -492,6 +492,25 @@ def debug_users():
         db.close()
 
 
+@app.route('/debug/delete-all-users', methods=['POST'])
+def debug_delete_all_users():
+    """Debug endpoint: delete all users (requires secret token)"""
+    secret = request.args.get('secret')
+    if secret != os.environ.get('DEBUG_SECRET', 'debug-secret-change-me'):
+        return jsonify({'error': 'unauthorized'}), 403
+    
+    db = SessionLocal()
+    try:
+        count = db.query(User).delete()
+        db.commit()
+        return jsonify({'deleted': count})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.errorhandler(404)
 def not_found(error):
     """Handle 404 errors"""
