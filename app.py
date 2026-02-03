@@ -466,6 +466,32 @@ def request_entity_too_large(error):
     return jsonify({'error': 'File too large. Maximum size is 5MB.'}), 413
 
 
+@app.route('/debug/users')
+def debug_users():
+    """Debug endpoint: list all users in the database (requires secret token)"""
+    secret = request.args.get('secret')
+    if secret != os.environ.get('DEBUG_SECRET', 'debug-secret-change-me'):
+        return jsonify({'error': 'unauthorized'}), 403
+    
+    db = SessionLocal()
+    try:
+        users = db.query(User).all()
+        users_list = []
+        for u in users:
+            users_list.append({
+                'id': u.id,
+                'username': u.username,
+                'email': u.email,
+                'phone_number': u.phone_number,
+                'created_at': u.created_at.isoformat() if u.created_at else None
+            })
+        return jsonify({'total': len(users_list), 'users': users_list})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.errorhandler(404)
 def not_found(error):
     """Handle 404 errors"""
