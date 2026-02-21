@@ -1,46 +1,51 @@
 const mongoose = require('mongoose');
 
-// User Schema
-const userSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
-  username: { type: String, unique: true, required: true, lowercase: true },
-  password: { type: String, required: true },
-  email: { type: String, unique: true, required: true, lowercase: true },
-  created_at: { type: Date, default: Date.now }
+// User Schema - Compatible with string UUIDs
+const UserSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  username: { type: String, required: true, unique: true, index: true },
+  email: { type: String, sparse: true, unique: true, index: true },
+  phone_number: { type: String, sparse: true, unique: true, index: true },
+  password_hash: { type: String, required: true },
+  created_at: { type: Date, default: Date.now, index: true },
+  updated_at: { type: Date, default: Date.now }
 });
 
 // Analysis Schema
-const analysisSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
-  user_id: { type: mongoose.Schema.Types.ObjectId, required: true, ref: 'User' },
-  job_role: String,
-  tfidf_score: Number,
-  ats_score: Number,
-  skill_match: {
-    matched: [String],
-    missing: [String],
-    match_percentage: Number,
-    matched_count: Number,
-    required_count: Number
-  },
-  recommendation: String,
-  detected_skills: [String],
-  resume_text: String,
-  resume_url: String,
-  created_at: { type: Date, default: Date.now }
+const AnalysisSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  user_id: { type: String, required: true, index: true },
+  timestamp: { type: Date, default: Date.now, index: true },
+  job_role: { type: String, required: true },
+  tfidf_score: { type: Number, default: 0 },
+  ats_score: { type: Number, default: 0 },
+  skill_match_json: { type: String, default: '{}' },
+  recommendation: { type: String, default: '' },
+  analysis_json: { type: String, default: '{}' },
+  resume_url: { type: String, default: '' },
+  created_at: { type: Date, default: Date.now, index: true }
+
+
+// Password Reset Schema with TTL (auto-expires after 1 hour)
+const PasswordResetSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true, index: true },
+  user_id: { type: String, required: true, index: true },
+  token: { type: String, required: true },
+  identifier: { type: String, required: true },
+  expires_at: { type: Date, required: true, index: { expireAfterSeconds: 0 } },
+  reset_ticket: { type: String, sparse: true, unique: true },
+  reset_ticket_expires_at: { type: Date, sparse: true },
+  verified_at: { type: Date, sparse: true },
+  created_at: { type: Date, default: Date.now, index: true }
 });
 
-// Password Reset Schema
-const passwordResetSchema = new mongoose.Schema({
-  _id: mongoose.Schema.Types.ObjectId,
-  email: { type: String, required: true },
-  token: { type: String, required: true, unique: true },
-  reset_ticket: String,
-  created_at: { type: Date, default: Date.now, expires: 3600 } // Expires after 1 hour
-});
+// Export Models
+const User = mongoose.model('User', UserSchema);
+const Analysis = mongoose.model('Analysis', AnalysisSchema);
+const PasswordReset = mongoose.model('PasswordReset', PasswordResetSchema);
 
-const User = mongoose.model('User', userSchema);
-const Analysis = mongoose.model('Analysis', analysisSchema);
-const PasswordReset = mongoose.model('PasswordReset', passwordResetSchema);
-
-module.exports = { User, Analysis, PasswordReset };
+module.exports = {
+  User,
+  Analysis,
+  PasswordReset
+};

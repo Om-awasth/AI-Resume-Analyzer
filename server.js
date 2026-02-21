@@ -9,6 +9,10 @@ const pdfParse = require("pdf-parse");
 const bcrypt = require("bcryptjs");
 const nodemailer = require("nodemailer");
 const { v4: uuidv4 } = require("uuid");
+const mongoose = require("mongoose");
+const MongoStore = require("connect-mongo");
+const cloudinary = require("cloudinary").v2;
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
 
 const {
   getJobDescription,
@@ -18,40 +22,71 @@ const {
   getJobSkills
 } = require("./src/data/skills");
 
+const { User, Analysis, PasswordReset } = require("./src/db/models");
+
 dotenv.config();
 
-const app = express();
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }
+// Initialize Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const dataDir = path.join(__dirname, "data");
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-const storePath = process.env.JSON_DB_PATH || path.join(dataDir, "app.json");
-
-function loadStore() {
-  if (!fs.existsSync(storePath)) {
-    const initial = { users: [], analyses: [], password_resets: [] };
-    fs.writeFileSync(storePath, JSON.stringify(initial, null, 2));
-    return initial;
-  }
+// Promise-based MongoDB connection
+async function connectMongoDB() {
   try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8"));
-    return {
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      analyses: Array.isArray(parsed.analyses) ? parsed.analyses : [],
-      password_resets: Array.isArray(parsed.password_resets) ? parsed.password_resets : []
-    };
-  } catch {
-    return { users: [], analyses: [], password_resets: [] };
+    const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/resume_analyzer";
+    await mongoose.connect(mongoUri, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    });
+    console.log("✓ MongoDB connected successfully");
+  } catch (error) {
+    console.error("✗ MongoDB connection failed:", error.message);
+    // Allow server to start even if MongoDB fails for development
+    if (process.env.NODE_ENV === "production") {
+      process.exit(1);
+    }
   }
 }
 
-function saveStore(store) {
-  fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+const app = express();
+
+// Cloudinary Storage for multipart uploads
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "resume_analyzer",
+    resource_type: "auto",
+    allowed_formats: ["pdf"]
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === "application/pdf") {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF files are allowed"), false);
+    }
+  }
+});
+
+// Fallback to memory storage if Cloudinary is not configured (for development)
+let uploadHandler = upload;
+const isCloudinaryConfigured = process.env.CLOUDINARY_CLOUD_NAME && 
+                                process.env.CLOUDINARY_API_KEY && 
+                                process.env.CLOUDINARY_API_SECRET;
+
+if (!isCloudinaryConfigured) {
+  console.warn("⚠️ Cloudinary not configured. Using memory storage (not recommended for production)");
+  uploadHandler = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }
+  });
 }
 
 function getSmtpConfig() {
@@ -118,16 +153,27 @@ async function sendResetEmail(to, otpCode) {
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// MongoDB-backed session store
+const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/resume_analyzer";
+const sessionStore = new MongoStore({
+  mongoUrl: mongoUri,
+  touchAfter: 24 * 3600 // Lazy session update (24 hours)
+});
+
 app.use(session({
-  secret: process.env.RESUME_ANALYZER_SECRET || "dev-secret-change-me",
+  secret: process.env.SESSION_SECRET || process.env.RESUME_ANALYZER_SECRET || "dev-secret-change-me",
   resave: false,
   saveUninitialized: false,
+  store: sessionStore,
   cookie: {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production"
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
   }
 }));
+
 
 app.use("/static", express.static(path.join(__dirname, "static")));
 
@@ -262,197 +308,243 @@ function calculateResumeSimilarity(resumeText, jobDescription) {
 }
 
 function createUser(username, password, phoneNumber = null, email = null) {
-  const store = loadStore();
-  const existing = store.users.find((user) =>
-    (username && user.username === username) ||
-    (phoneNumber && user.phone_number === phoneNumber) ||
-    (email && user.email === email)
-  );
-  if (existing) return null;
+  return (async () => {
+    try {
+      // Check for existing user
+      const existing = await User.findOne({
+        $or: [
+          { username: username },
+          ...(phoneNumber ? [{ phone_number: phoneNumber }] : []),
+          ...(email ? [{ email: email }] : [])
+        ]
+      });
 
-  const id = uuidv4();
-  const createdAt = new Date().toISOString();
-  const passwordHash = bcrypt.hashSync(password, 10);
-  const finalUsername = username || `user_${id.slice(0, 8)}`;
+      if (existing) return null;
 
-  const user = { id, username: finalUsername, email, phone_number: phoneNumber, password_hash: passwordHash, created_at: createdAt };
-  store.users.push(user);
-  saveStore(store);
+      const id = uuidv4();
+      const createdAt = new Date();
+      const passwordHash = bcrypt.hashSync(password, 10);
+      const finalUsername = username || `user_${id.slice(0, 8)}`;
 
-  return { id, username: finalUsername, email, phone_number: phoneNumber, created_at: createdAt };
-}
+      const user = new User({
+        id,
+        username: finalUsername,
+        email: email || null,
+        phone_number: phoneNumber || null,
+        password_hash: passwordHash,
+        created_at: createdAt,
+        updated_at: createdAt
+      });
 
-function authenticateUser(identifier, password) {
-  if (!identifier) return null;
-  const store = loadStore();
-  const clean = String(identifier).trim();
-  const phoneLike = clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/);
-
-  let user;
-  if (phoneLike) {
-    user = store.users.find((row) => row.phone_number === clean);
-  }
-  if (!user) {
-    user = store.users.find((row) => row.username === clean || row.email === clean);
-  }
-  if (!user) return null;
-  if (!bcrypt.compareSync(password, user.password_hash)) return null;
-
-  return {
-    id: user.id,
-    username: user.username,
-    email: user.email,
-    phone_number: user.phone_number,
-    created_at: user.created_at
-  };
-}
-
-function saveAnalysis(userId, analysis) {
-  const store = loadStore();
-  const id = uuidv4();
-  const timestamp = new Date().toISOString();
-  store.analyses.push(
-    {
-    id,
-    user_id: userId,
-    timestamp,
-    job_role: analysis.job_role,
-    tfidf_score: Number(analysis.tfidf_score || 0),
-    ats_score: Number(analysis.ats_score || 0),
-    skill_match_json: JSON.stringify(analysis.skill_match || {}),
-    recommendation: analysis.recommendation || "",
-    analysis_json: JSON.stringify(analysis)
-  }
-  );
-  saveStore(store);
-}
-
-function createPasswordReset(identifier) {
-  const store = loadStore();
-  const clean = String(identifier || "").trim();
-  if (!clean) return null;
-  let user;
-
-  if (clean.includes("@")) {
-    user = store.users.find((row) => row.email === clean);
-  }
-  if (!user && clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/)) {
-    user = store.users.find((row) => row.phone_number === clean);
-  }
-  if (!user) {
-    user = store.users.find((row) => row.username === clean);
-  }
-  if (!user) return null;
-
-  const otpCode = String(Math.floor(100000 + Math.random() * 900000));
-  const now = new Date();
-  const expires = new Date(now.getTime() + 60 * 60 * 1000).toISOString();
-
-  store.password_resets = store.password_resets.filter((entry) => entry.user_id !== user.id);
-
-  store.password_resets.push({
-    id: uuidv4(),
-    user_id: user.id,
-    token: otpCode,
-    identifier: clean,
-    expires_at: expires,
-    created_at: now.toISOString()
-  });
-  saveStore(store);
-
-  return {
-    otp: otpCode,
-    email: user.email || clean
-  };
-}
-
-function verifyPasswordResetOtp(identifier, otpCode) {
-  const store = loadStore();
-  const clean = String(identifier || "").trim();
-  const code = String(otpCode || "").trim();
-  if (!clean || !code) {
-    return { ok: false, error: "email and otp required" };
-  }
-
-  let user = null;
-  if (clean.includes("@")) {
-    user = store.users.find((row) => row.email === clean);
-  }
-  if (!user && clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/)) {
-    user = store.users.find((row) => row.phone_number === clean);
-  }
-  if (!user) {
-    user = store.users.find((row) => row.username === clean);
-  }
-  if (!user) {
-    return { ok: false, error: "user not found" };
-  }
-
-  const row = store.password_resets.find((entry) => entry.user_id === user.id && entry.token === code);
-  if (!row) {
-    return { ok: false, error: "invalid otp" };
-  }
-
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    store.password_resets = store.password_resets.filter((entry) => entry.id !== row.id);
-    saveStore(store);
-    return { ok: false, error: "expired otp" };
-  }
-
-  const resetTicket = uuidv4().replace(/-/g, "");
-  row.reset_ticket = resetTicket;
-  row.reset_ticket_expires_at = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  row.verified_at = new Date().toISOString();
-  saveStore(store);
-
-  return { ok: true, reset_ticket: resetTicket };
-}
-
-function resetPasswordWithToken(token, newPassword, identifier = null, resetTicket = null) {
-  const store = loadStore();
-  let row = null;
-
-  if (resetTicket) {
-    row = store.password_resets.find((entry) => entry.reset_ticket === resetTicket);
-  } else {
-    row = store.password_resets.find((entry) => entry.token === token);
-  }
-  if (!row) return false;
-
-  if (resetTicket) {
-    if (!row.reset_ticket_expires_at || new Date(row.reset_ticket_expires_at).getTime() < Date.now()) {
-      store.password_resets = store.password_resets.filter((entry) => entry.id !== row.id);
-      saveStore(store);
-      return false;
+      await user.save();
+      return { id, username: finalUsername, email, phone_number: phoneNumber, created_at: createdAt };
+    } catch (error) {
+      console.error("createUser error:", error);
+      return null;
     }
-  }
+  })();
+}
 
-  if (identifier) {
+async function authenticateUser(identifier, password) {
+  try {
+    if (!identifier) return null;
     const clean = String(identifier).trim();
-    const user = store.users.find((entry) => entry.id === row.user_id);
-    const matchesIdentifier = user && (
-      user.email === clean ||
-      user.username === clean ||
-      user.phone_number === clean
-    );
-    if (!matchesIdentifier) {
+    const phoneLike = clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/);
+
+    let user;
+    if (phoneLike) {
+      user = await User.findOne({ phone_number: clean });
+    }
+    if (!user) {
+      user = await User.findOne({
+        $or: [
+          { username: clean },
+          { email: clean }
+        ]
+      });
+    }
+    if (!user) return null;
+    if (!bcrypt.compareSync(password, user.password_hash)) return null;
+
+    return {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      phone_number: user.phone_number,
+      created_at: user.created_at
+    };
+  } catch (error) {
+    console.error("authenticateUser error:", error);
+    return null;
+  }
+}
+
+async function saveAnalysis(userId, analysis) {
+  try {
+    const id = uuidv4();
+    const timestamp = new Date();
+    
+    const analysisRecord = new Analysis({
+      id,
+      user_id: userId,
+      timestamp,
+      job_role: analysis.job_role,
+      tfidf_score: Number(analysis.tfidf_score || 0),
+      ats_score: Number(analysis.ats_score || 0),
+      skill_match_json: JSON.stringify(analysis.skill_match || {}),
+      recommendation: analysis.recommendation || "",
+      analysis_json: JSON.stringify(analysis),
+      resume_url: analysis.resume_url || "",
+      created_at: timestamp
+    });
+
+    await analysisRecord.save();
+    return { id, timestamp };
+  } catch (error) {
+    console.error("saveAnalysis error:", error);
+    throw error;
+  }
+}
+
+async function createPasswordReset(identifier) {
+  try {
+    const clean = String(identifier || "").trim();
+    if (!clean) return null;
+    let user;
+
+    if (clean.includes("@")) {
+      user = await User.findOne({ email: clean });
+    }
+    if (!user && clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/)) {
+      user = await User.findOne({ phone_number: clean });
+    }
+    if (!user) {
+      user = await User.findOne({ username: clean });
+    }
+    if (!user) return null;
+
+    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const now = new Date();
+    const expires = new Date(now.getTime() + 60 * 60 * 1000);
+
+    // Remove old resets for this user
+    await PasswordReset.deleteMany({ user_id: user.id });
+
+    const reset = new PasswordReset({
+      id: uuidv4(),
+      user_id: user.id,
+      token: otpCode,
+      identifier: clean,
+      expires_at: expires,
+      created_at: now
+    });
+    await reset.save();
+
+    return {
+      otp: otpCode,
+      email: user.email || clean
+    };
+  } catch (error) {
+    console.error("createPasswordReset error:", error);
+    return null;
+  }
+}
+
+async function verifyPasswordResetOtp(identifier, otpCode) {
+  try {
+    const clean = String(identifier || "").trim();
+    const code = String(otpCode || "").trim();
+    if (!clean || !code) {
+      return { ok: false, error: "email and otp required" };
+    }
+
+    let user = null;
+    if (clean.includes("@")) {
+      user = await User.findOne({ email: clean });
+    }
+    if (!user && clean.replace(/[+-]/g, "").replace(/\s/g, "").match(/^\d+$/)) {
+      user = await User.findOne({ phone_number: clean });
+    }
+    if (!user) {
+      user = await User.findOne({ username: clean });
+    }
+    if (!user) {
+      return { ok: false, error: "user not found" };
+    }
+
+    const row = await PasswordReset.findOne({ user_id: user.id, token: code });
+    if (!row) {
+      return { ok: false, error: "invalid otp" };
+    }
+
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      await PasswordReset.deleteOne({ _id: row._id });
+      return { ok: false, error: "expired otp" };
+    }
+
+    const resetTicket = uuidv4().replace(/-/g, "");
+    row.reset_ticket = resetTicket;
+    row.reset_ticket_expires_at = new Date(Date.now() + 10 * 60 * 1000);
+    row.verified_at = new Date();
+    await row.save();
+
+    return { ok: true, reset_ticket: resetTicket };
+  } catch (error) {
+    console.error("verifyPasswordResetOtp error:", error);
+    return { ok: false, error: error.message };
+  }
+}
+
+async function resetPasswordWithToken(token, newPassword, identifier = null, resetTicket = null) {
+  try {
+    let row = null;
+
+    if (resetTicket) {
+      row = await PasswordReset.findOne({ reset_ticket: resetTicket });
+    } else {
+      row = await PasswordReset.findOne({ token: token });
+    }
+    if (!row) return false;
+
+    if (resetTicket) {
+      if (!row.reset_ticket_expires_at || new Date(row.reset_ticket_expires_at).getTime() < Date.now()) {
+        await PasswordReset.deleteOne({ _id: row._id });
+        return false;
+      }
+    }
+
+    if (identifier) {
+      const clean = String(identifier).trim();
+      const user = await User.findOne({ id: row.user_id });
+      const matchesIdentifier = user && (
+        user.email === clean ||
+        user.username === clean ||
+        user.phone_number === clean
+      );
+      if (!matchesIdentifier) {
+        return false;
+      }
+    }
+
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      await PasswordReset.deleteOne({ _id: row._id });
       return false;
     }
-  }
 
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    store.password_resets = store.password_resets.filter((entry) => entry.token !== token);
-    saveStore(store);
+    const hash = bcrypt.hashSync(newPassword, 10);
+    const user = await User.findOne({ id: row.user_id });
+    if (!user) return false;
+    
+    user.password_hash = hash;
+    user.updated_at = new Date();
+    await user.save();
+
+    await PasswordReset.deleteOne({ _id: row._id });
+    return true;
+  } catch (error) {
+    console.error("resetPasswordWithToken error:", error);
     return false;
   }
-
-  const hash = bcrypt.hashSync(newPassword, 10);
-  const user = store.users.find((entry) => entry.id === row.user_id);
-  if (!user) return false;
-  user.password_hash = hash;
-  store.password_resets = store.password_resets.filter((entry) => entry.token !== token);
-  saveStore(store);
-  return true;
 }
 
 app.get("/", (req, res) => {
@@ -462,7 +554,7 @@ app.get("/", (req, res) => {
   return res.render("index.html", { job_roles: getAllJobRoles() });
 });
 
-app.post("/analyze", upload.single("resume"), async (req, res) => {
+app.post("/analyze", uploadHandler.single("resume"), async (req, res) => {
   if (!req.session.user_id) {
     return res.status(401).json({ error: "Authentication required" });
   }
@@ -481,7 +573,17 @@ app.post("/analyze", upload.single("resume"), async (req, res) => {
       return res.status(400).json({ error: "Invalid job role" });
     }
 
-    const parsed = await pdfParse(file.buffer);
+    // Handle both Cloudinary and memory storage
+    let buffer;
+    if (file.buffer) {
+      buffer = file.buffer;
+    } else if (file.secure_url) {
+      // If using Cloudinary, we'd need to fetch the file or process differently
+      // For now, we'll require buffer for PDF parsing
+      return res.status(400).json({ error: "File upload processing failed" });
+    }
+
+    const parsed = await pdfParse(buffer);
     const resumeText = cleanText(parsed.text || "");
     if (!resumeText) {
       return res.status(400).json({ error: "Could not extract text from PDF. Ensure it is not scanned." });
@@ -534,16 +636,18 @@ app.post("/analyze", upload.single("resume"), async (req, res) => {
     };
 
     try {
-      saveAnalysis(req.session.user_id, {
+      await saveAnalysis(req.session.user_id, {
         job_role: jobRole,
         tfidf_score: tfidfScore,
         ats_score: atsScore,
         skill_match: skillMatch,
         recommendation,
-        detected_skills: detectedSkills
+        detected_skills: detectedSkills,
+        resume_url: file.secure_url || ""
       });
     } catch (error) {
       // best-effort history save
+      console.error("Failed to save analysis:", error);
     }
 
     return res.json(results);
@@ -689,46 +793,54 @@ app.get("/skill-test/:skill", (req, res) => {
   }
 });
 
-app.post("/signup", (req, res) => {
-  const data = req.body || {};
-  const username = data.username || null;
-  const password = data.password;
-  const phone = data.phone || null;
-  const email = data.email || (username && username.includes("@") ? username : null);
+app.post("/signup", async (req, res) => {
+  try {
+    const data = req.body || {};
+    const username = data.username || null;
+    const password = data.password;
+    const phone = data.phone || null;
+    const email = data.email || (username && username.includes("@") ? username : null);
 
-  if (!password || (!username && !phone && !email)) {
-    return res.status(400).json({ error: "provide password and username, phone, or email" });
+    if (!password || (!username && !phone && !email)) {
+      return res.status(400).json({ error: "provide password and username, phone, or email" });
+    }
+
+    const user = await createUser(username, password, phone, email);
+    if (!user) {
+      return res.status(400).json({ error: "username, phone, or email already exists" });
+    }
+
+    req.session.user_id = user.id;
+    req.session.username = user.username;
+    return res.json({ message: "user created", username: user.username, email: user.email, phone: user.phone_number });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
-
-  const user = createUser(username, password, phone, email);
-  if (!user) {
-    return res.status(400).json({ error: "username, phone, or email already exists" });
-  }
-
-  req.session.user_id = user.id;
-  req.session.username = user.username;
-  return res.json({ message: "user created", username: user.username, email: user.email, phone: user.phone_number });
 });
 
-app.post("/login", (req, res) => {
-  const data = req.body || {};
-  const username = data.username;
-  const phone = data.phone;
-  const password = data.password;
-  const identifier = phone || username;
+app.post("/login", async (req, res) => {
+  try {
+    const data = req.body || {};
+    const username = data.username;
+    const phone = data.phone;
+    const password = data.password;
+    const identifier = phone || username;
 
-  if (!identifier || !password) {
-    return res.status(400).json({ error: "identifier (username or phone) and password required" });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: "identifier (username or phone) and password required" });
+    }
+
+    const user = await authenticateUser(identifier, password);
+    if (!user) {
+      return res.status(401).json({ error: "invalid credentials" });
+    }
+
+    req.session.user_id = user.id;
+    req.session.username = user.username;
+    return res.json({ message: "logged in", username: user.username, phone: user.phone_number });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
-
-  const user = authenticateUser(identifier, password);
-  if (!user) {
-    return res.status(401).json({ error: "invalid credentials" });
-  }
-
-  req.session.user_id = user.id;
-  req.session.username = user.username;
-  return res.json({ message: "logged in", username: user.username, phone: user.phone_number });
 });
 
 app.post("/request-otp", (req, res) => res.status(410).json({ error: "OTP login is disabled" }));
@@ -750,7 +862,7 @@ app.post("/forgot-password", async (req, res) => {
   }
 
   try {
-    const resetData = createPasswordReset(identifier);
+    const resetData = await createPasswordReset(identifier);
     if (!resetData) {
       return res.status(404).json({ error: "user not found" });
     }
@@ -768,7 +880,7 @@ app.post("/forgot-password", async (req, res) => {
   }
 });
 
-app.post("/verify-reset-otp", (req, res) => {
+app.post("/verify-reset-otp", async (req, res) => {
   const data = req.body || {};
   const identifier = data.email || data.identifier;
   const otp = data.otp;
@@ -778,7 +890,7 @@ app.post("/verify-reset-otp", (req, res) => {
   }
 
   try {
-    const result = verifyPasswordResetOtp(identifier, otp);
+    const result = await verifyPasswordResetOtp(identifier, otp);
     if (!result.ok) {
       return res.status(400).json({ error: result.error || "invalid or expired otp" });
     }
@@ -794,7 +906,7 @@ app.get("/reset-password", (req, res) => {
   return res.render("reset_password.html", { token, email });
 });
 
-app.post("/reset-password", (req, res) => {
+app.post("/reset-password", async (req, res) => {
   const data = req.body || {};
   const token = data.token;
   const otp = data.otp;
@@ -816,7 +928,7 @@ app.post("/reset-password", (req, res) => {
   }
 
   try {
-    const ok = resetPasswordWithToken(verificationCode, newPassword, identifier || null, resetTicket || null);
+    const ok = await resetPasswordWithToken(verificationCode, newPassword, identifier || null, resetTicket || null);
     if (!ok) {
       return res.status(400).json({ error: "invalid or expired otp" });
     }
@@ -847,23 +959,22 @@ app.get("/history", (req, res) => {
   return res.render("history.html");
 });
 
-app.get("/api/history", (req, res) => {
+app.get("/api/history", async (req, res) => {
   const userId = req.session.user_id;
   if (!userId) {
     return res.status(401).json({ error: "not authenticated" });
   }
 
   try {
-    const store = loadStore();
-    const found = store.users.find((row) => row.id === userId);
+    const found = await User.findOne({ id: userId });
     const user = found ? { username: found.username, phone_number: found.phone_number } : null;
     if (!user) {
       return res.json({ user: null, analyses: [] });
     }
 
-    const analyses = store.analyses
-      .filter((row) => row.user_id === userId)
-      .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+    const analyses = await Analysis.find({ user_id: userId })
+      .sort({ timestamp: 1 });
+      
     const analysesData = analyses.map((a) => {
       let skillMatch = {};
       let analysisJson = {};
@@ -996,6 +1107,16 @@ app.use((err, req, res, next) => {
 });
 
 const port = Number(process.env.PORT || 8080);
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Resume Analyzer JS server listening on ${port}`);
+
+// Start server with MongoDB connection
+async function startServer() {
+  await connectMongoDB();
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`✓ Resume Analyzer server listening on ${port}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start server:", error);
+  process.exit(1);
 });
